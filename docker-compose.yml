@@ -1,0 +1,70 @@
+services:
+  # ── PostgreSQL with pgvector ─────────────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: knowledgehub_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: knowledgehub
+      POSTGRES_PASSWORD: knowledgehub
+      POSTGRES_DB: knowledgehub
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U knowledgehub -d knowledgehub"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (FastAPI) ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: knowledgehub_backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://knowledgehub:knowledgehub@db:5432/knowledgehub
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "
+        alembic -c migrations/alembic.ini upgrade head &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+  # ── Frontend (React + Vite dev server) ───────────────────────────────────────
+  # Uses a simple Node image to run the Vite dev server.
+  # No multi-stage build needed for development — the builder Dockerfile
+  # is only used for production builds.
+  frontend:
+    image: node:20-alpine
+    container_name: knowledgehub_frontend
+    restart: unless-stopped
+    working_dir: /app
+    environment:
+      VITE_API_BASE_URL: ""                           # empty = use Vite proxy
+      VITE_BACKEND_PROXY_TARGET: "http://backend:8000" # resolved inside Docker network
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+
+volumes:
+  postgres_data:
+  uploads_data:
+  frontend_node_modules:
